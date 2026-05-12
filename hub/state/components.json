@@ -42,17 +42,17 @@
   {
     "id": "tts-toggle",
     "name": "TTS toggle (browser SpeechSynthesis)",
-    "state": "done",
-    "owner": "frontend-builder",
-    "updated": "2026-05-12T10:59:31.000Z",
-    "notes": "Toggle button that pipes each new narration through window.speechSynthesis with a slow, low-rate default voice. ElevenLabs is a stretch goal — out of MVP."
+    "state": "review",
+    "owner": "wave-3a-builder",
+    "updated": "2026-05-12T11:55:00.000Z",
+    "notes": "Extended for ElevenLabs audio path per decision 0008. speak() accepts string or narration object; plays new Audio(audioUrl) when present, falls back to SpeechSynth on error. Toggle-off pauses live audio."
   },
   {
     "id": "tts-synth",
     "name": "ElevenLabs TTS synth (server-side proxy + lazy cache)",
-    "state": "todo",
-    "owner": null,
-    "updated": "2026-05-12T11:34:24.000Z",
-    "notes": "Server-side ElevenLabs proxy. /audio/:id route, in-memory LRU cache, daily char-cap kill-switch. Per decision 0007. SpeechSynth fallback preserved in public/tts.js."
+    "state": "review",
+    "owner": "wave-3a-builder",
+    "updated": "2026-05-12T11:55:00.000Z",
+    "notes": "src/ttsSynth.js — createTtsSynth({logger,config,env}) with mount/register/isEnabled. /audio/:id lazy synth, LRU cache, daily char cap with 25/50/75/100% threshold logs, AbortController timeout. Soft fallback when keys absent. Wave 3b integrator wires into src/index.js."
   }
 ]

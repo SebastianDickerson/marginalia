@@ -5,7 +5,8 @@
   let enabled = localStorage.getItem(STORAGE_KEY) === 'on';
   let resolvedVoice = null;
   let speaking = false;
-  let pendingText = null;
+  let pending = null; // string | { text, audioUrl }
+  let currentAudio = null;
 
   const synth = window.speechSynthesis;
   const btn = document.getElementById('tts-toggle');
@@ -40,35 +41,82 @@
     btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
   }
 
+  function onFinish() {
+    speaking = false;
+    currentAudio = null;
+    if (!enabled) {
+      pending = null;
+      return;
+    }
+    if (pending) {
+      const next = pending;
+      pending = null;
+      play(next);
+    }
+  }
+
   function utter(text) {
-    if (!synth) return;
+    if (!synth || !text) {
+      onFinish();
+      return;
+    }
     speaking = true;
     const u = new SpeechSynthesisUtterance(text);
     if (resolvedVoice) u.voice = resolvedVoice;
     u.rate = cfg.rate;
     u.pitch = cfg.pitch;
-    u.onend = u.onerror = () => {
-      speaking = false;
-      if (!enabled) {
-        pendingText = null;
-        return;
-      }
-      if (pendingText) {
-        const next = pendingText;
-        pendingText = null;
-        utter(next);
-      }
-    };
+    u.onend = u.onerror = onFinish;
     synth.speak(u);
+  }
+
+  function playAudio(text, audioUrl) {
+    let a;
+    try {
+      a = new Audio(audioUrl);
+    } catch {
+      utter(text);
+      return;
+    }
+    speaking = true;
+    currentAudio = a;
+    let fellBack = false;
+    const fallback = () => {
+      if (fellBack) return;
+      fellBack = true;
+      currentAudio = null;
+      utter(text); // utter() calls onFinish on completion
+    };
+    a.onended = onFinish;
+    a.onerror = fallback;
+    const promise = a.play();
+    if (promise && typeof promise.catch === 'function') {
+      promise.catch(fallback);
+    }
+  }
+
+  // Accepts a plain string (legacy call site) or a narration object {text, audioUrl?}.
+  function play(item) {
+    const text = typeof item === 'string' ? item : item && item.text;
+    const audioUrl = typeof item === 'object' && item ? item.audioUrl : null;
+    if (!text) return;
+    if (audioUrl) {
+      playAudio(text, audioUrl);
+    } else {
+      utter(text);
+    }
   }
 
   function setEnabled(next) {
     enabled = next;
     localStorage.setItem(STORAGE_KEY, enabled ? 'on' : 'off');
     if (!enabled) {
-      pendingText = null;
+      pending = null;
       speaking = false;
       if (synth) synth.cancel();
+      if (currentAudio) {
+        try { currentAudio.pause(); } catch {}
+        currentAudio = null;
+      }
     } else if (!resolvedVoice) {
       resolvedVoice = resolveVoice();
     }
@@ -82,13 +130,15 @@
 
   window.Marginalia = window.Marginalia || {};
   window.Marginalia.tts = {
-    speak(text) {
-      if (!enabled || !text || !synth) return;
+    speak(item) {
+      if (!enabled || !item) return;
+      const text = typeof item === 'string' ? item : item.text;
+      if (!text) return;
       if (speaking) {
-        pendingText = text;
+        pending = item;
         return;
       }
-      utter(text);
+      play(item);
     },
     isEnabled() {
       return enabled;

@@ -33,4 +33,20 @@ export const config = Object.freeze({
     replayStaggerMs: 400,
     hoverDrainStaggerMs: 400,
   },
+  tts: {
+    elevenlabs: {
+      apiBase: 'https://api.elevenlabs.io',
+      modelId: process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5',
+      voiceSettings: {
+        stability: 0.45,
+        similarity_boost: 0.75,
+        style: 0.30,
+        use_speaker_boost: true,
+      },
+      cacheSize: 20,
+      maxChars: 300,
+      dailyCharCap: Number(process.env.ELEVENLABS_DAILY_CHAR_CAP) || 30000,
+      requestTimeoutMs: 8000,
+    },
+  },
 });

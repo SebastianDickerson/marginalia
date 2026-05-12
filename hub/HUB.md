@@ -16,8 +16,8 @@ Marginalia is a live web app that narrates the Wikipedia edit firehose in the vo
 | llm-narrator | LLM narrator (Claude Haiku) | done | llm-narrator-builder | 2026-05-12T10:59:31.000Z | Calls claude-haiku-4-5-20251001 with the Attenborough system prompt and the {user,title,comment,delta} payload. Returns one sentence, max 30 words, no quotation marks, never says 'Wikipedia'. |
 | sse-server | SSE server (Express /stream endpoint) | done | sse-server-builder | 2026-05-12T10:59:31.000Z | Express/Fastify process that wires consumer → filter → narrator and re-broadcasts narrations to browser clients over SSE. Serves the static frontend too. |
 | frontend | Frontend (vanilla JS, dark page, fading text) | done | frontend-builder | 2026-05-12T10:59:31.000Z | Single HTML page. EventSource consumer. Full-bleed dark background, large serif text, newest line fades in at top and older lines drift down/out. Tailwind via CDN OK. Pause-on-hover and copy-to-clipboard are polish. |
-| tts-toggle | TTS toggle (browser SpeechSynthesis) | done | frontend-builder | 2026-05-12T10:59:31.000Z | Toggle button that pipes each new narration through window.speechSynthesis with a slow, low-rate default voice. ElevenLabs is a stretch goal — out of MVP. |
-| tts-synth | ElevenLabs TTS synth (server-side proxy + lazy cache) | todo | — | 2026-05-12T11:34:24.000Z | Server-side ElevenLabs proxy. /audio/:id route, in-memory LRU cache, daily char-cap kill-switch. Per decision 0007. SpeechSynth fallback preserved in public/tts.js. |
+| tts-toggle | TTS toggle (browser SpeechSynthesis) | review | wave-3a-builder | 2026-05-12T11:55:00.000Z | Extended for ElevenLabs audio path per decision 0008. speak() accepts string or narration object; plays new Audio(audioUrl) when present, falls back to SpeechSynth on error. Toggle-off pauses live audio. |
+| tts-synth | ElevenLabs TTS synth (server-side proxy + lazy cache) | review | wave-3a-builder | 2026-05-12T11:55:00.000Z | src/ttsSynth.js — createTtsSynth({logger,config,env}) with mount/register/isEnabled. /audio/:id lazy synth, LRU cache, daily char cap with 25/50/75/100% threshold logs, AbortController timeout. Soft fallback when keys absent. Wave 3b integrator wires into src/index.js. |
 
 ## Active Claims
 
@@ -828,6 +828,104 @@ Wave 3 run order:
 
 Once these land, the next coordinator drafts `hub/prompts/wave-3a-tts-synth.md` and `hub/prompts/wave-3b-tts-integration.md`, and the user kicks off `/wave 3a` in a fresh terminal.
 
+### 0008-2026-05-12T11:55:00.000Z-wave-3a-builder.md
+# Decision: Wave 3a — ElevenLabs TTS synth module + frontend audio path
+Date: 2026-05-12T11:55:00.000Z
+Author: wave-3a-builder
+Status: accepted
+
+## Context
+Wave 3a per `hub/prompts/wave-3a.md` (drafted in-flight by this agent — coordinator had not produced one) and binding to decision `0007` Q28–Q50. Two component rows reserved: `tts-synth` (todo) and `tts-toggle` (done — re-opened for the `public/tts.js` extension).
+
+`src/index.js` was NOT touched. That is Wave 3b's seat.
+
+## Decision
+
+### New file: `src/ttsSynth.js`
+Factory `createTtsSynth({ logger, config, env })`. Surface:
+
+- `mount(app)` — registers `GET /audio/:id` when enabled; no-op when disabled.
+- `register(narration)` — returns the `audioUrl` string when the audio path should be attached to this broadcast, else `null`. Single decision point baked from: enabled check, per-narration size guard (`maxChars`, Q37), daily char cap (Q36). Side-effects: indexes id → text in the LRU cache (`cacheSize`, Q35) and increments the daily counter by `narration.text.length`.
+- `isEnabled()` — `true` iff both `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` are set.
+
+Cache: `Map<id, { text, buffer? }>`. Bump on access, evict oldest when `size > cacheSize`.
+
+`/audio/:id` flow:
+- not in cache → `404`.
+- cached buffer → serve `audio/mpeg` with `Cache-Control: no-store`.
+- text only → synthesize, store buffer, serve.
+- synth error → `502` + `[tts] synth error ...` at `warn` (deduped per narration id).
+
+ElevenLabs call: `POST {apiBase}/v1/text-to-speech/{voice_id}` non-streaming, `Accept: audio/mpeg`, body `{ text, model_id, voice_settings }`. `AbortController` timeout = `config.tts.elevenlabs.requestTimeoutMs` (default `8000`). Q33.
+
+Budget telemetry: when `dailyCharsUsed` crosses 25/50/75/100% of the cap, emit `[tts] day-char total=X cap=Y (Z%)` at `info` once per threshold. Q48.
+
+### Edited file: `public/tts.js`
+- `window.Marginalia.tts.speak(item)` now accepts either a plain `string` (legacy `public/app.js` call site) or a narration object `{ text, audioUrl? }`. Q40 + Q45 (no `public/app.js` change needed).
+- When `audioUrl` is present, play via `new Audio(audioUrl)`. `onended` drains the queue; `onerror` and `play().catch()` rejection fall back to `SpeechSynthesisUtterance(narration.text)` for that line only. Subsequent calls go through normal queue logic.
+- Bounded-depth-1 pending queue (Q5) preserved. Pending replaces pending; no `cancel`/interrupt on a live audio.
+- Toggle-off now also pauses the live `<audio>` element (in addition to `synth.cancel()`).
+- SpeechSynth code path is preserved verbatim as the fallback — not deleted.
+
+### Edited file: `src/config.js`
+Appended `tts.elevenlabs` block:
+
+```js
+tts: {
+  elevenlabs: {
+    apiBase: 'https://api.elevenlabs.io',
+    modelId: process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5',
+    voiceSettings: { stability: 0.45, similarity_boost: 0.75, style: 0.30, use_speaker_boost: true },
+    cacheSize: 20,
+    maxChars: 300,
+    dailyCharCap: Number(process.env.ELEVENLABS_DAILY_CHAR_CAP) || 30000,
+    requestTimeoutMs: 8000,
+  },
+},
+```
+
+All knobs from Q30/Q35/Q37 live here. Q26 still binding — no new magic numbers in `ttsSynth.js`.
+
+### Edited file: `.env.example`
+Appended `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID`, `ELEVENLABS_DAILY_CHAR_CAP` with the comment block from Q47.
+
+### New file: `hub/prompts/wave-3a.md`
+Coordinator had not drafted the wave prompt when the human ran `/wave 3a`. Drafted in-flight from decision `0007`'s Q-set so the slash command resolves and future `/wave 3a` invocations are reproducible. No spec drift — content is a faithful rendering of `0007`.
+
+## Deviations from `0007`
+
+None that affect contract. Two procedural choices worth noting:
+
+1. **`register` returns `string | null` instead of pairing `isEnabled()` + a separate `budgetExceeded()` accessor.** Q44's wire-pattern wanted `if (ttsSynth.isEnabled() && !budgetExceeded)`. Folding both into `register()`'s return value collapses the integrator's call site to `const audioUrl = ttsSynth.register(narration); if (audioUrl) narration.audioUrl = audioUrl;`. `isEnabled()` is still exposed for the integrator's startup logging. No behaviour change.
+2. **`speak()` accepts both `string` and narration-object.** Q40 says `public/tts.js` only; Q45 says no `public/app.js` change. Making the legacy string call site keep working means Wave 3b doesn't HAVE to touch `app.js` (they may still choose to, to forward the whole narration; both work).
+
+## Verification
+
+- `npm test` → green. Smoke unchanged (Q49). New config logged at boot, audio path stays off (no key in test env).
+- Manual: imported `ttsSynth.js`, exercised `register()` with empty / oversize / dup-id / cap-exhausted inputs — all returned expected `null` / `audioUrl`. Threshold log fired at 25%/50% on a 20-char cap.
+- `mount(app)` no-op verified when disabled; `[tts] audio path enabled` log verified when both env vars present.
+
+Live end-to-end test (real ElevenLabs key + custom voice id) is the integrator's job after `0009`.
+
+## Component rows
+
+- `tts-synth`: `todo → review`, owner `wave-3a-builder`.
+- `tts-toggle`: `done → review`, owner `wave-3a-builder` (frontend extension only — original SpeechSynth implementation untouched, just wrapped).
+
+Five other rows untouched.
+
+## Hand-off to Wave 3b integrator
+
+See inbox note `2026-05-12T11:55:00.000Z-wave-3a-builder-wave-3b-integrator.md` for wiring details, the cache-key encoding gotcha, and the mount-order requirement (`ttsSynth.mount(app)` BEFORE `sseServer.mount(app)`, since the latter installs a catch-all 404 — Q44 + integrator inbox note 1).
+
+## Consequences
+
+- New module + one frontend edit + one config block + four env vars. No npm deps (Q46 honoured).
+- Without `ELEVENLABS_API_KEY`, the app is bit-identical to the post-`0006` MVP. Q38.
+- With the key set but Wave 3b not yet shipped, the module is silent: it isn't imported anywhere in `src/index.js` yet. The frontend extension is also dormant — `audioUrl` is never broadcast.
+- Daily-char counter is in-memory and resets on every process restart. A real budget breach across restarts will not be caught; this matches `0007`'s explicit "Persisted in-memory only" call.
+- Decision sequence: `0009` is reserved for Wave 3b.
+
 ## Questions
 
 ### Open
@@ -839,6 +937,94 @@ _(none)_
 _(none)_
 
 ## Recent Inbox (last 20)
+
+### 2026-05-12T11:56:58.000Z-coordinator-wave-3b-integrator.md
+From: coordinator
+To: wave-3b-integrator
+Re: Q45 amendment — one-line `public/app.js` change is in scope for Wave 3b
+---
+
+3a flagged this in their hand-off inbox (item 6). Confirming the call:
+
+**Q45 is amended.** Decision `0007` Q45 said "no `public/app.js` changes" — written before considering the call-site signature. Strict literal reading would leave the ElevenLabs audio path permanently dark, defeating the entire scope expansion. The original Q45 intent was "don't refactor `app.js`, don't change rendering, don't touch the DOM/CSS path." A one-line call-site swap from `speak(narration.text)` → `speak(narration)` is in-bounds.
+
+**Authorised diff** in `public/app.js` (one line, inside the SSE handler that calls `Marginalia.tts.speak`):
+
+```js
+// before:
+window.Marginalia.tts.speak(narration.text);
+// after:
+window.Marginalia.tts.speak(narration);
+```
+
+Nothing else in `app.js` should change. Confirm `tts.speak`'s string-OR-narration signature (per 3a's `0008`) handles both forms — backward-compat is preserved if anyone reverts.
+
+**Document in your `0009`** under "Deviations from prompt":
+- Q45 amended by coordinator inbox `2026-05-12T11:56:58.000Z-coordinator-wave-3b-integrator.md`.
+- Cite this file. Don't quietly skip the override — future readers need to see the chain.
+
+Everything else in the Wave 3b prompt stands. Mount-before-server, no fail-fast on ElevenLabs key, soft fallback, all five verification steps.
+
+Ship `0009`, flip rows, release claim.
+
+### 2026-05-12T11:55:00.000Z-wave-3a-builder-wave-3b-integrator.md
+From: wave-3a-builder
+To: wave-3b-integrator
+Re: Wiring `src/ttsSynth.js` into `src/index.js`
+---
+
+Wave 3a shipped (`0008`). `src/ttsSynth.js` and the `public/tts.js` extension are in `review`. You own `src/index.js` (Q15/Q44); I did not touch it.
+
+## Six things to know before you claim and wire
+
+1. **Surface returns `audioUrl` directly.**
+   I collapsed the Q44 wire-pattern. Your call sites:
+   ```js
+   import { createTtsSynth } from './ttsSynth.js';
+   // ...
+   const ttsSynth = createTtsSynth({ logger, env });
+   ttsSynth.mount(app);                       // BEFORE server.mount(app)
+   // inside runNarration(), after narrate() returns a non-null narration:
+   const audioUrl = ttsSynth.register(narration);
+   if (audioUrl) narration.audioUrl = audioUrl;
+   server.broadcast(narration);
+   ```
+   `register()` bakes in the enabled check, size guard, and daily-cap gate — one decision, one return value. `isEnabled()` is exposed if you want a boot-time log line.
+
+2. **Mount order matters.**
+   `sseServer.mount(app)` installs a catch-all `(req,res) => res.status(404)` last. Mount `ttsSynth` BEFORE it or `/audio/:id` will be swallowed. Coordinator already flagged this in the integration-builder inbox; same rule.
+
+3. **No fail-fast for `ELEVENLABS_API_KEY`.**
+   Only `ANTHROPIC_API_KEY` is fail-fast (Q11). Soft fallback per Q38: when no key, `isEnabled()` is `false`, `register()` always returns `null`, `mount()` is a no-op. Boot stays clean.
+
+4. **Replay buffer + audio cache lifetimes are independent.**
+   Q41: replay narrations carry `audioUrl` only IFF the entry is still in the LRU cache when the new client connects. The simplest correct behaviour is to attach `audioUrl` at `register()` time (broadcast moment) — the `sseServer`'s replay buffer then stores the narration WITH that field. By the time a new client gets the replay, the LRU may have evicted the id; `/audio/:id` will 404; frontend falls back to SpeechSynth. This is the spec'd behaviour — no extra work on your side.
+
+5. **Cache key uses `encodeURIComponent`.**
+   I encode `narration.id` into the URL path. Narration ids are MediaWiki rev-ids (numbers as strings) so this is a no-op today, but keep using whatever `narration.id` is. Don't strip or re-encode in the broadcast.
+
+6. **`public/app.js` does NOT need changes.**
+   `Marginalia.tts.speak()` now accepts both a string and a narration object. If you pass `narration.text` (current call site), the SpeechSynth path runs as today. If you change `app.js` to pass the whole narration, the ElevenLabs path activates when `audioUrl` is present. **The audioUrl path will not run until `app.js` is updated to pass the narration.** Decide whether Wave 3b includes that one-line `app.js` edit — Q45 said "no `public/app.js` change" but in practice without it the audio path stays dark. Recommend you include it under Wave 3b's seat (you own the integration layer; I cannot edit `app.js` per Q45).
+
+   The minimal change in `public/app.js`'s SSE handler:
+   ```js
+   // before:
+   window.Marginalia.tts.speak(narration.text);
+   // after:
+   window.Marginalia.tts.speak(narration);
+   ```
+
+   If you'd rather keep `app.js` untouched, the audio path dies on Q45's literal reading. Flag this for the human if you're unsure; my read is "extend `public/tts.js`" was the prohibition's spirit and updating one call site to pass the richer object is in-bounds for Wave 3b. Your call.
+
+## Verification plan (Q-spec rehash, for your test pass)
+
+1. `npm test` green — no ElevenLabs env in test, smoke unchanged.
+2. `npm start` with only `ANTHROPIC_API_KEY` — MVP behaviour intact. Confirm: no `/audio` route, no `audioUrl` on broadcast frames.
+3. `npm start` with full env — first narration shows, `/audio/<id>` returns MP3 within ~1s. Server logs `[tts] synth ok`. Browser plays via `<audio>`.
+4. Set `ELEVENLABS_DAILY_CHAR_CAP=200`; after a couple of lines, `audioUrl` stops being attached; threshold logs fire.
+5. Set `ELEVENLABS_VOICE_ID=invalid`; `/audio/:id` returns `502`; browser falls back to SpeechSynth for that line; no process crash.
+
+Ping me back if any wiring questions; otherwise ship `0009` and flip both rows `review → done` after live verify.
 
 ### 2026-05-12T10:50:00.000Z-coordinator-integration-builder.md
 From: coordinator
@@ -870,4 +1056,4 @@ Out-of-scope reminders (resist creep): no ElevenLabs, no theme selector, no mult
 Ping me via inbox if anything ambiguous before you claim. Otherwise: claim, wire, ship `0006`, flip rows `review → done` only after end-to-end live verify (`npm start` + browser at `/`).
 
 ---
-Generated 2026-05-12T11:39:19.788Z. Do not edit by hand. Run `node hub/rebuild-hub.mjs` to refresh.
+Generated 2026-05-12T11:57:14.744Z. Do not edit by hand. Run `node hub/rebuild-hub.mjs` to refresh.
