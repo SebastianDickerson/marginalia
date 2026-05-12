@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Marginalia</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      html, body { height: 100%; }
+      body { font-family: 'EB Garamond', Georgia, 'Times New Roman', serif; }
+      #stack { font-size: 2rem; line-height: 1.4; max-width: 70ch; }
+    </style>
+  </head>
+  <body class="bg-black text-stone-200 min-h-screen flex items-center justify-center px-6">
+    <main id="stack" class="w-full mx-auto flex flex-col gap-4"></main>
+
+    <button
+      id="tts-toggle"
+      type="button"
+      class="fixed bottom-4 right-4 text-sm tracking-wide uppercase border border-stone-700 text-stone-400 hover:text-stone-200 hover:border-stone-500 px-3 py-1 rounded"
+    >narrate aloud</button>
+
+    <div
+      id="toast"
+      class="fixed bottom-4 left-1/2 -translate-x-1/2 text-xs tracking-wide uppercase text-stone-400 opacity-0 transition-opacity duration-300 pointer-events-none"
+    ></div>
+
+    <script src="/config.js"></script>
+    <script src="/tts.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "sse-consumer",
+    "name": "SSE consumer — Wikipedia recent-changes subscriber",
+    "state": "done",
+    "owner": "pipeline-in-builder",
+    "updated": "2026-05-12T10:59:31.000Z",
+    "notes": "Connects to https://stream.wikimedia.org/v2/stream/recentchange via EventSource and emits parsed events to the filter. Handle reconnects."
+  },
+  {
+    "id": "event-filter",
+    "name": "Event filter + rate limiter",
+    "state": "done",
+    "owner": "pipeline-in-builder",
+    "updated": "2026-05-12T10:59:31.000Z",
+    "notes": "Drops bots, non-enwiki, non-edit/new, trivial (<50 byte) diffs, and User:/Talk:/Wikipedia:/File:/Template: titles. Rate-limits kept events to 1 per 4s."
+  },
+  {
+    "id": "llm-narrator",
+    "name": "LLM narrator (Claude Haiku)",
+    "state": "done",
+    "owner": "llm-narrator-builder",
+    "updated": "2026-05-12T10:59:31.000Z",
+    "notes": "Calls claude-haiku-4-5-20251001 with the Attenborough system prompt and the {user,title,comment,delta} payload. Returns one sentence, max 30 words, no quotation marks, never says 'Wikipedia'."
+  },
+  {
+    "id": "sse-server",
+    "name": "SSE server (Express /stream endpoint)",
+    "state": "done",
+    "owner": "sse-server-builder",
+    "updated": "2026-05-12T10:59:31.000Z",
+    "notes": "Express/Fastify process that wires consumer → filter → narrator and re-broadcasts narrations to browser clients over SSE. Serves the static frontend too."
+  },
+  {
+    "id": "frontend",
+    "name": "Frontend (vanilla JS, dark page, fading text)",
+    "state": "done",
+    "owner": "frontend-builder",
+    "updated": "2026-05-12T10:59:31.000Z",
+    "notes": "Single HTML page. EventSource consumer. Full-bleed dark background, large serif text, newest line fades in at top and older lines drift down/out. Tailwind via CDN OK. Pause-on-hover and copy-to-clipboard are polish."
+  },
+  {
+    "id": "tts-toggle",
+    "name": "TTS toggle (browser SpeechSynthesis)",
+    "state": "done",
+    "owner": "frontend-builder",
+    "updated": "2026-05-12T10:59:31.000Z",
+    "notes": "Toggle button that pipes each new narration through window.speechSynthesis with a slow, low-rate default voice. ElevenLabs is a stretch goal — out of MVP."
+  },
+  {
+    "id": "tts-synth",
+    "name": "ElevenLabs TTS synth (server-side proxy + lazy cache)",
+    "state": "todo",
+    "owner": null,
+    "updated": "2026-05-12T11:34:24.000Z",
+    "notes": "Server-side ElevenLabs proxy. /audio/:id route, in-memory LRU cache, daily char-cap kill-switch. Per decision 0007. SpeechSynth fallback preserved in public/tts.js."
+  }
+]
