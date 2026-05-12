@@ -50,7 +50,7 @@
     }
 
     if (window.Marginalia && window.Marginalia.tts && window.Marginalia.tts.speak) {
-      window.Marginalia.tts.speak(narration.text);
+      window.Marginalia.tts.speak(narration);
     }
   }
 

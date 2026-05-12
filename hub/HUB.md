@@ -16,8 +16,8 @@ Marginalia is a live web app that narrates the Wikipedia edit firehose in the vo
 | llm-narrator | LLM narrator (Claude Haiku) | done | llm-narrator-builder | 2026-05-12T10:59:31.000Z | Calls claude-haiku-4-5-20251001 with the Attenborough system prompt and the {user,title,comment,delta} payload. Returns one sentence, max 30 words, no quotation marks, never says 'Wikipedia'. |
 | sse-server | SSE server (Express /stream endpoint) | done | sse-server-builder | 2026-05-12T10:59:31.000Z | Express/Fastify process that wires consumer → filter → narrator and re-broadcasts narrations to browser clients over SSE. Serves the static frontend too. |
 | frontend | Frontend (vanilla JS, dark page, fading text) | done | frontend-builder | 2026-05-12T10:59:31.000Z | Single HTML page. EventSource consumer. Full-bleed dark background, large serif text, newest line fades in at top and older lines drift down/out. Tailwind via CDN OK. Pause-on-hover and copy-to-clipboard are polish. |
-| tts-toggle | TTS toggle (browser SpeechSynthesis) | review | wave-3a-builder | 2026-05-12T11:55:00.000Z | Extended for ElevenLabs audio path per decision 0008. speak() accepts string or narration object; plays new Audio(audioUrl) when present, falls back to SpeechSynth on error. Toggle-off pauses live audio. |
-| tts-synth | ElevenLabs TTS synth (server-side proxy + lazy cache) | review | wave-3a-builder | 2026-05-12T11:55:00.000Z | src/ttsSynth.js — createTtsSynth({logger,config,env}) with mount/register/isEnabled. /audio/:id lazy synth, LRU cache, daily char cap with 25/50/75/100% threshold logs, AbortController timeout. Soft fallback when keys absent. Wave 3b integrator wires into src/index.js. |
+| tts-toggle | TTS toggle (browser audio + SpeechSynthesis fallback) | done | wave-3a-builder | 2026-05-12T12:10:00.000Z | Wave 3a extended speak() to accept narration object {text, audioUrl?}. Wave 3b updated public/app.js to pass the whole narration so the audio path activates when audioUrl is present. SpeechSynth fallback on audio error. |
+| tts-synth | ElevenLabs TTS synth (server-side proxy + lazy cache) | done | wave-3a-builder | 2026-05-12T12:10:00.000Z | Wired into src/index.js by wave-3b-integrator (decision 0009): construct alongside server, mount before sseServer's catch-all, register narration and attach audioUrl when register returns non-null. Smoke test green; mount-order and disabled-mode behaviour verified. |
 
 ## Active Claims
 
@@ -926,6 +926,106 @@ See inbox note `2026-05-12T11:55:00.000Z-wave-3a-builder-wave-3b-integrator.md` 
 - Daily-char counter is in-memory and resets on every process restart. A real budget breach across restarts will not be caught; this matches `0007`'s explicit "Persisted in-memory only" call.
 - Decision sequence: `0009` is reserved for Wave 3b.
 
+### 0009-2026-05-12T12:10:00.000Z-wave-3b-integrator.md
+# Decision: Wave 3b — TTS integration wired in src/index.js
+Date: 2026-05-12T12:10:00.000Z
+Author: wave-3b-integrator
+Status: accepted
+
+## Context
+Wave 3b per `hub/prompts/wave-3b-tts-integration.md`. Wave 3a shipped at
+`a765a67` with decision `0008-wave-3a-builder`: `src/ttsSynth.js` exists,
+`public/tts.js` extended, `tts-synth` and `tts-toggle` left at
+`state: "review"`. The integrator owns `src/index.js` (Q15 / Q44).
+
+This wave was authored in a worktree (`worktree-wave-3b-integrate`) on
+top of the master branch's Wave 3a commit. The user explicitly chose
+the "adopt master 3a + redo 3b" reconciliation path after a parallel
+session had produced a combined 3a+3b commit on a discarded branch.
+
+## Reconciliation against 3a's actual surface
+
+`0008-wave-3a-builder.md` line 16-17 documents that `register()` returns
+the `audioUrl` string when the audio path should be attached, else
+`null`. The Wave 3b prompt's wire-pattern (Step 3.4) and `0008`'s
+"Deviations" note both call this out — Q44's `if (isEnabled() && !budgetExceeded)`
+check is folded into `register()`'s return value. This integrator uses
+the actual surface, not Q44's literal wire-pattern.
+
+## Diff applied to `src/index.js`
+
+Four edits, no rewrites:
+
+1. **Import** — added `import { createTtsSynth } from './ttsSynth.js';` alongside the other module imports.
+
+2. **Construct** — after `const server = createSseServer({ logger });`:
+   ```js
+   const ttsSynth = createTtsSynth({ logger, config, env });
+   ```
+   Unconditional construction (Q38). When keys are unset the factory returns a no-op surface; `mount` is a no-op and `register` always returns `null`.
+
+3. **Mount BEFORE sseServer** — in the Express setup block:
+   ```js
+   const app = express();
+   ttsSynth.mount(app); // Q44 — must precede server.mount so the catch-all 404 stays last
+   server.mount(app);
+   ```
+
+4. **Wire `register` + `audioUrl`** — inside `runNarration`'s `try` block, after `narrator.narrate()` resolves to a truthy narration and `lastNarratedAt` is bumped, before `server.broadcast(narration)`:
+   ```js
+   const audioUrl = ttsSynth.register(narration);
+   if (audioUrl) narration.audioUrl = audioUrl;
+   server.broadcast(narration);
+   ```
+
+No shutdown work added. No fail-fast extension for `ELEVENLABS_API_KEY`
+(Q38 + Q11). Logger / entrypoint / signal handlers untouched.
+
+## Diff applied to `public/app.js`
+
+One line, inside the SSE handler that calls `Marginalia.tts.speak`:
+
+```js
+// before:
+window.Marginalia.tts.speak(narration.text);
+// after:
+window.Marginalia.tts.speak(narration);
+```
+
+Authorised by coordinator inbox `2026-05-12T11:56:58.000Z-coordinator-wave-3b-integrator.md` (Q45 amendment). Without this line the ElevenLabs audio path stays dark by construction. The 3a-extended `tts.speak()` accepts both `string` and narration object, so the change is reversible.
+
+## Files NOT touched
+
+`src/ttsSynth.js`, `public/tts.js`, `src/config.js`, `.env.example`,
+`public/index.html`, `src/sseConsumer.js`, `src/eventFilter.js`,
+`src/llmNarrator.js`, `src/sseServer.js`, `test/smoke.test.js`,
+`package.json`.
+
+## Verification
+
+1. **Smoke green.** `npm test` — `tests 1 pass 1 fail 0`. No ElevenLabs env in test → audio path disabled → existing assertion unchanged (Q49).
+
+2. **Disabled mode (no ElevenLabs key).** Booted `createApp({ startPipeline: false })` with `env: { PORT: '3000' }` (Anthropic key absent OK because pipeline disabled). No `[tts] audio path enabled` log; `GET /audio/anything` → `404` via sseServer's catch-all. MVP behaviour intact.
+
+3. **Enabled mode mount-order.** Booted with `ELEVENLABS_API_KEY=dummy ELEVENLABS_VOICE_ID=dummy startPipeline: false`. Log line `[tts] audio path enabled (model=eleven_turbo_v2_5 cap=30000)` fires (3a's `mount` log). Then:
+   - `GET /audio/unknown` → `404` (handled by `ttsSynth.handleAudioRequest`, cache empty, ends before catch-all).
+   - `GET /stream` → `200 text/event-stream`.
+   - `GET /nope` → `404` (sseServer catch-all still last).
+
+4. **Verification deferred to live test.** Steps 5.3 (real ElevenLabs synth), 5.4 (daily-cap kill-switch), 5.5 (synth-error fallback) require a real `ELEVENLABS_API_KEY` + valid `ELEVENLABS_VOICE_ID`. The user has confirmed both are present in `.env` but the live `npm start` end-to-end run is not part of this committed verification — it is the user's first manual smoke after the merge.
+
+## Deviations from prompt
+
+- **Q45 amended.** Per coordinator inbox `2026-05-12T11:56:58.000Z-coordinator-wave-3b-integrator.md`, the one-line `public/app.js` call-site change is authorised. The amendment was already in master before this wave's worktree was cut; this integrator merely applied it.
+- **Worktree authored.** Wave-3b changes were committed on `worktree-wave-3b-integrate` and fast-forwarded into master rather than committed directly. This mirrors the wave-as-isolated-job pattern; the resulting tree is identical.
+
+## Consequences
+
+- `tts-synth` and `tts-toggle` rows flip `review → done`. Remaining five rows stay `done`.
+- ElevenLabs audio path is live wherever `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` are both set. SpeechSynth remains the per-line fallback on audio errors (Q39) and the global fallback when keys are unset (Q38).
+- No new npm deps. No new tests (Q50).
+- Daily char-cap counter is in-memory; restart resets. Documented in 3a's decision and inherited here.
+
 ## Questions
 
 ### Open
@@ -1056,4 +1156,4 @@ Out-of-scope reminders (resist creep): no ElevenLabs, no theme selector, no mult
 Ping me via inbox if anything ambiguous before you claim. Otherwise: claim, wire, ship `0006`, flip rows `review → done` only after end-to-end live verify (`npm start` + browser at `/`).
 
 ---
-Generated 2026-05-12T11:57:14.744Z. Do not edit by hand. Run `node hub/rebuild-hub.mjs` to refresh.
+Generated 2026-05-12T12:05:12.846Z. Do not edit by hand. Run `node hub/rebuild-hub.mjs` to refresh.

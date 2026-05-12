@@ -5,6 +5,7 @@ import { createConsumer } from './sseConsumer.js';
 import { createFilter } from './eventFilter.js';
 import { createNarrator } from './llmNarrator.js';
 import { createSseServer } from './sseServer.js';
+import { createTtsSynth } from './ttsSynth.js';
 
 function makeLogger(env) {
   const debugOn = env.DEBUG === '1';
@@ -27,6 +28,7 @@ export async function createApp({ startPipeline = true, env = process.env } = {}
 
   const narrator = startPipeline ? createNarrator({ logger }) : null;
   const server = createSseServer({ logger });
+  const ttsSynth = createTtsSynth({ logger, config, env });
 
   let inFlight = false;
   let lastNarratedAt = 0;
@@ -40,6 +42,8 @@ export async function createApp({ startPipeline = true, env = process.env } = {}
       const narration = await narrator.narrate(filteredEvent);
       if (narration) {
         lastNarratedAt = Date.now();
+        const audioUrl = ttsSynth.register(narration);
+        if (audioUrl) narration.audioUrl = audioUrl;
         server.broadcast(narration);
       }
     } finally {
@@ -48,6 +52,7 @@ export async function createApp({ startPipeline = true, env = process.env } = {}
   }
 
   const app = express();
+  ttsSynth.mount(app); // Q44 — must precede server.mount so the catch-all 404 stays last
   server.mount(app);
 
   let consumer = null;

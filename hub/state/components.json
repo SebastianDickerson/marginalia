@@ -41,18 +41,18 @@
   },
   {
     "id": "tts-toggle",
-    "name": "TTS toggle (browser SpeechSynthesis)",
-    "state": "review",
+    "name": "TTS toggle (browser audio + SpeechSynthesis fallback)",
+    "state": "done",
     "owner": "wave-3a-builder",
-    "updated": "2026-05-12T11:55:00.000Z",
-    "notes": "Extended for ElevenLabs audio path per decision 0008. speak() accepts string or narration object; plays new Audio(audioUrl) when present, falls back to SpeechSynth on error. Toggle-off pauses live audio."
+    "updated": "2026-05-12T12:10:00.000Z",
+    "notes": "Wave 3a extended speak() to accept narration object {text, audioUrl?}. Wave 3b updated public/app.js to pass the whole narration so the audio path activates when audioUrl is present. SpeechSynth fallback on audio error."
   },
   {
     "id": "tts-synth",
     "name": "ElevenLabs TTS synth (server-side proxy + lazy cache)",
-    "state": "review",
+    "state": "done",
     "owner": "wave-3a-builder",
-    "updated": "2026-05-12T11:55:00.000Z",
-    "notes": "src/ttsSynth.js — createTtsSynth({logger,config,env}) with mount/register/isEnabled. /audio/:id lazy synth, LRU cache, daily char cap with 25/50/75/100% threshold logs, AbortController timeout. Soft fallback when keys absent. Wave 3b integrator wires into src/index.js."
+    "updated": "2026-05-12T12:10:00.000Z",
+    "notes": "Wired into src/index.js by wave-3b-integrator (decision 0009): construct alongside server, mount before sseServer's catch-all, register narration and attach audioUrl when register returns non-null. Smoke test green; mount-order and disabled-mode behaviour verified."
   }
 ]
