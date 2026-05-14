@@ -1026,6 +1026,91 @@ Authorised by coordinator inbox `2026-05-12T11:56:58.000Z-coordinator-wave-3b-in
 - No new npm deps. No new tests (Q50).
 - Daily char-cap counter is in-memory; restart resets. Documented in 3a's decision and inherited here.
 
+### 0010-2026-05-14T05:15:00.000Z-deploy-fly.md
+# Decision: Deploy — Fly.io backend, CF Pages frontend scaffolded but unused
+Date: 2026-05-14T05:15:00.000Z
+Author: deploy
+Status: accepted
+
+## Context
+
+MVP shipped to a single Fly.io machine in `syd` region. User wanted to
+"spend this live" and initially asked about Cloudflare Pages. Stack is a
+stateful Express server (upstream Wikimedia SSE subscriber + Anthropic
+narrator + ElevenLabs TTS proxy + per-client SSE fan-out), so CF Pages
+alone is a poor fit — Pages Functions are request-scoped Workers without
+a persistent upstream connection. Three paths considered:
+
+1. CF Pages (static) + Node host (backend) — keep CF for edge CDN.
+2. Full CF Workers + Durable Object — major rewrite.
+3. Single Node host — simplest.
+
+Railway was first pick; trial expired at `railway init`. Pivoted to Fly.
+
+## Decision
+
+Backend on Fly.io. Frontend served by the same Express process via
+`express.static('public')`. CF Pages deferred — proxy code is in repo
+(`functions/stream.js`, `functions/audio/[id].js`) but no Pages project
+created. Sydney-only single machine; HA pair scaled down to one to avoid
+duplicate upstream subscriptions and 2× Anthropic spend.
+
+## Changes applied
+
+1. **`src/sseServer.js`** — added `GET /healthz` before the static
+   handler and 404 catch-all. Returns `200 ok`. Fly health check polls
+   it every 30s.
+2. **`Dockerfile`** — Node 20-slim, `npm ci --omit=dev`, copies `src/`
+   + `public/` only, `CMD ["node", "src/index.js"]`, `EXPOSE 8080`.
+3. **`.dockerignore`** — excludes `node_modules`, `.env*`, `test/`,
+   `hub/`, `functions/`, markdown.
+4. **`fly.toml`** — `internal_port = 8080`, `auto_stop_machines = "off"`
+   (long-lived upstream consumer must not idle out),
+   `min_machines_running = 1`, health check on `/healthz`,
+   `[[vm]] memory = "256mb"`. App renamed by `fly launch` to
+   `marginalia-lively-shape-699` (auto-generated unique name).
+5. **`functions/stream.js`** + **`functions/audio/[id].js`** — CF Pages
+   Function proxies that fetch `${BACKEND_URL}/stream` and
+   `${BACKEND_URL}/audio/:id` and pass body through with SSE headers
+   (`Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`).
+   Not wired to any deployed Pages project. Kept for future use.
+
+## Secrets on Fly
+
+Set via `fly secrets set`:
+- `ANTHROPIC_API_KEY` — fail-fast at boot if missing.
+- `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` — optional; absent
+  disables the audio path (Q38) and the app boots fine.
+
+`PORT=8080` set in Dockerfile (Fly also injects `PORT`); both align.
+
+## Verification
+
+- `npm test` — smoke green after `/healthz` addition.
+- `fly deploy` — both machines reached `started` state.
+- `curl https://marginalia-lively-shape-699.fly.dev/healthz` → `200 ok`.
+- Browser at the Fly URL renders fading narrations within ~4–10s.
+- `fly scale count 1` — reduced from default HA pair to single machine.
+
+## Deviations from earlier plan
+
+- CF Pages deploy step skipped. Express static is "good enough" for a
+  Sydney-based demo; CF wins (edge CDN, custom domain, hidden backend
+  URL) don't apply yet. `functions/` left in repo for the day they do.
+- Railway dropped due expired trial; switched to Fly without code
+  changes — both honor `process.env.PORT`.
+
+## Consequences
+
+- Live URL: `https://marginalia-lively-shape-699.fly.dev`. Owner pays
+  Fly pay-as-you-go (~$0–5/mo at 256MB, single shared-cpu, syd).
+- Single machine = single in-memory replay buffer + TTS cache. Restart
+  loses both; acceptable per 3a/3b decisions.
+- Long-lived SSE clients sit on Fly's proxy; force-https + auto-start
+  on the off chance the machine is stopped manually.
+- `functions/` is dead code today. If revived, set `BACKEND_URL` in CF
+  Pages env to the Fly hostname and run `wrangler pages deploy public/`.
+
 ## Questions
 
 ### Open
@@ -1156,4 +1241,4 @@ Out-of-scope reminders (resist creep): no ElevenLabs, no theme selector, no mult
 Ping me via inbox if anything ambiguous before you claim. Otherwise: claim, wire, ship `0006`, flip rows `review → done` only after end-to-end live verify (`npm start` + browser at `/`).
 
 ---
-Generated 2026-05-12T12:05:12.846Z. Do not edit by hand. Run `node hub/rebuild-hub.mjs` to refresh.
+Generated 2026-05-14T05:43:24.186Z. Do not edit by hand. Run `node hub/rebuild-hub.mjs` to refresh.

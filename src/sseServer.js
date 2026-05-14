@@ -68,6 +68,7 @@ export function createSseServer({ logger } = {}) {
   }
 
   function mount(app) {
+    app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
     app.get('/stream', handleStream);
     app.use(express.static('public'));
     app.use((req, res) => {
