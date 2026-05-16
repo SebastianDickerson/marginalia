@@ -1,13 +1,11 @@
 // LLM narrator — single non-streaming Anthropic call with output validation.
-//
-// Strict serial concurrency (Q8) is the caller's responsibility, not this
-// module's. `narrate()` is re-entrant-safe at the HTTP-call level, but the
-// integrator (Wave 2) must gate calls so that only one is in flight and the
-// 4-second cadence is honoured. `lastNarratedAt` is set by the caller on a
-// non-null return, per Q8.
+// Strict serial concurrency is the caller's responsibility (the DO gates on
+// inFlight + lastNarratedAt). This module is HTTP-call-level re-entrant.
 
-import Anthropic from '@anthropic-ai/sdk';
-import { config } from './config.js';
+import { defaultConfig } from './config.js';
+
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_VERSION = '2023-06-01';
 
 const FEW_SHOT_LITERALS = [
   'Lichen',
@@ -67,27 +65,48 @@ function buildUserMessage(ev) {
   return lines.join('\n');
 }
 
-export function createNarrator({ logger = console } = {}) {
-  const client = new Anthropic();
+export function createNarrator({
+  logger = console,
+  env = {},
+  config = defaultConfig,
+  fetch: fetchImpl = globalThis.fetch,
+} = {}) {
+  const apiKey = env.ANTHROPIC_API_KEY;
+  const narratorCfg = config.narrator;
 
   async function narrate(ev) {
+    if (!apiKey) {
+      logger.warn?.(`narrator error id=${ev.id}: ANTHROPIC_API_KEY missing`);
+      return null;
+    }
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), config.narrator.timeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), narratorCfg.timeoutMs);
 
     let resp;
     try {
-      resp = await client.messages.create(
-        {
-          model: config.narrator.model,
-          max_tokens: config.narrator.maxTokens,
-          temperature: config.narrator.temperature,
+      const httpResp = await fetchImpl(ANTHROPIC_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: narratorCfg.model,
+          max_tokens: narratorCfg.maxTokens,
+          temperature: narratorCfg.temperature,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: buildUserMessage(ev) }],
-        },
-        { signal: ctrl.signal },
-      );
+        }),
+        signal: ctrl.signal,
+      });
+      if (!httpResp.ok) {
+        const txt = await safeText(httpResp);
+        throw new Error(`anthropic ${httpResp.status}: ${truncate(txt, 160)}`);
+      }
+      resp = await httpResp.json();
     } catch (err) {
-      logger.warn(`narrator error id=${ev.id}: ${err?.message || err}`);
+      logger.warn?.(`narrator error id=${ev.id}: ${err?.message || err}`);
       return null;
     } finally {
       clearTimeout(timer);
@@ -98,21 +117,21 @@ export function createNarrator({ logger = console } = {}) {
     const text = raw.trim();
 
     if (text === '') {
-      logger.warn(`narrator reject id=${ev.id} bucket=empty`);
+      logger.warn?.(`narrator reject id=${ev.id} bucket=empty`);
       return null;
     }
 
     const wordCount = text.split(/\s+/).length;
-    if (wordCount > config.narrator.rejectMaxWords) {
-      logger.warn(
+    if (wordCount > narratorCfg.rejectMaxWords) {
+      logger.warn?.(
         `narrator reject id=${ev.id} bucket=word-count(${wordCount}) text="${text.slice(0, 60)}"`,
       );
       return null;
     }
 
-    for (const pat of config.narrator.rejectPatterns) {
+    for (const pat of narratorCfg.rejectPatterns) {
       if (pat.test(text)) {
-        logger.warn(
+        logger.warn?.(
           `narrator reject id=${ev.id} bucket=regex(${pat}) text="${text.slice(0, 60)}"`,
         );
         return null;
@@ -122,16 +141,15 @@ export function createNarrator({ logger = console } = {}) {
     const lower = text.toLowerCase();
     for (const lit of FEW_SHOT_LITERALS) {
       if (lower.includes(lit.toLowerCase())) {
-        logger.warn(
+        logger.warn?.(
           `narrator reject id=${ev.id} bucket=few-shot-echo(${lit}) text="${text.slice(0, 60)}"`,
         );
         return null;
       }
     }
 
-    const deltaStr =
-      ev.type === 'new' ? `+${ev.delta}` : formatSignedDelta(ev.delta);
-    logger.info(
+    const deltaStr = ev.type === 'new' ? `+${ev.delta}` : formatSignedDelta(ev.delta);
+    logger.info?.(
       `narrator ship id=${ev.id} title="${ev.title}" delta=${deltaStr} text="${text.slice(0, 80)}"`,
     );
 
@@ -139,4 +157,17 @@ export function createNarrator({ logger = console } = {}) {
   }
 
   return { narrate };
+}
+
+function truncate(s, n) {
+  if (typeof s !== 'string') return '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+async function safeText(res) {
+  try {
+    return await res.text();
+  } catch {
+    return '';
+  }
 }

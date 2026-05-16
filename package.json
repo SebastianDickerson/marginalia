@@ -7,14 +7,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --test test/smoke.test.js"
+    "start": "wrangler dev",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.95.2",
-    "dotenv": "^17.4.2",
-    "eventsource": "^4.1.0",
-    "express": "^5.2.1"
+  "devDependencies": {
+    "wrangler": "^4.0.0"
   }
 }

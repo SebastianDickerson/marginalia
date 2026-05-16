@@ -1,14 +1,15 @@
-// ElevenLabs TTS synth — server-side proxy + lazy in-memory LRU cache.
-//
-// Wave 3a per decision 0007 (Q28–Q50). Lazy synthesis: text broadcasts go out
-// immediately; the frontend pulls /audio/:id when its TTS toggle is on. First
-// hit synthesizes and caches; later hits serve from cache. Soft fallback —
-// missing ELEVENLABS_API_KEY disables the audio path entirely; npm start still
-// boots and only ANTHROPIC_API_KEY is fail-fast (Q11/Q38).
+// ElevenLabs TTS synth — lazy in-memory LRU cache. Worker-shape:
+// register() decides eligibility + returns /audio/:id; serveAudio(id)
+// returns { status, body, headers } that the DO wraps in a Response.
 
-import { config as defaultConfig } from './config.js';
+import { defaultConfig } from './config.js';
 
-export function createTtsSynth({ logger, config: cfgOverride, env = process.env } = {}) {
+export function createTtsSynth({
+  logger,
+  config: cfgOverride,
+  env = {},
+  fetch: fetchImpl = globalThis.fetch,
+} = {}) {
   const cfg = cfgOverride ?? defaultConfig;
   const tts = cfg.tts.elevenlabs;
   const log = logger ?? console;
@@ -26,7 +27,7 @@ export function createTtsSynth({ logger, config: cfgOverride, env = process.env 
   let dailyCharsUsed = 0;
   const thresholds = [25, 50, 75, 100];
   const thresholdsFired = new Set();
-  const errorSeen = new Set(); // narration id → suppress duplicate warns
+  const errorSeen = new Set();
 
   function bump(id) {
     if (!cache.has(id)) return;
@@ -47,7 +48,7 @@ export function createTtsSynth({ logger, config: cfgOverride, env = process.env 
     for (const t of thresholds) {
       if (pct >= t && !thresholdsFired.has(t)) {
         thresholdsFired.add(t);
-        log.info(`[tts] day-char total=${dailyCharsUsed} cap=${tts.dailyCharCap} (${t}%)`);
+        log.info?.(`[tts] day-char total=${dailyCharsUsed} cap=${tts.dailyCharCap} (${t}%)`);
       }
     }
   }
@@ -59,10 +60,7 @@ export function createTtsSynth({ logger, config: cfgOverride, env = process.env 
     }
     const len = narration.text.length;
     if (len === 0 || len > tts.maxChars) return null;
-    if (dailyCharsUsed + len > tts.dailyCharCap) {
-      // Budget exhausted — text still broadcasts, frontend falls back to SpeechSynth.
-      return null;
-    }
+    if (dailyCharsUsed + len > tts.dailyCharCap) return null;
     cache.set(narration.id, { text: narration.text });
     evictExcess();
     dailyCharsUsed += len;
@@ -81,11 +79,11 @@ export function createTtsSynth({ logger, config: cfgOverride, env = process.env 
     const timer = setTimeout(() => controller.abort(), tts.requestTimeoutMs);
     const started = Date.now();
     try {
-      const res = await globalThis.fetch(url, {
+      const res = await fetchImpl(url, {
         method: 'POST',
         headers: {
           'xi-api-key': apiKey,
-          'Accept': 'audio/mpeg',
+          Accept: 'audio/mpeg',
           'Content-Type': 'application/json',
         },
         body,
@@ -98,53 +96,48 @@ export function createTtsSynth({ logger, config: cfgOverride, env = process.env 
         throw err;
       }
       const ab = await res.arrayBuffer();
-      const buf = Buffer.from(ab);
+      const bytes = new Uint8Array(ab);
       const ms = Date.now() - started;
       log.debug?.(`[tts] synth ok id=${id} chars=${text.length} ms=${ms} (cache size=${cache.size})`);
-      return buf;
+      return bytes;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  async function handleAudioRequest(req, res) {
-    const id = req.params.id;
+  async function serveAudio(id) {
     if (!cache.has(id)) {
-      res.status(404).end();
-      return;
+      return { status: 404, body: new Uint8Array(), headers: {} };
     }
     bump(id);
     const entry = cache.get(id);
     if (entry.buffer) {
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Cache-Control', 'no-store');
-      res.end(entry.buffer);
-      return;
+      return {
+        status: 200,
+        body: entry.buffer,
+        headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' },
+      };
     }
     try {
-      const buf = await synthesize(id, entry.text);
-      entry.buffer = buf;
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Cache-Control', 'no-store');
-      res.end(buf);
+      const bytes = await synthesize(id, entry.text);
+      entry.buffer = bytes;
+      return {
+        status: 200,
+        body: bytes,
+        headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' },
+      };
     } catch (err) {
       if (!errorSeen.has(id)) {
         errorSeen.add(id);
-        log.warn(`[tts] synth error id=${id} status=${err.status ?? 'n/a'} msg=${err.message}`);
+        log.warn?.(`[tts] synth error id=${id} status=${err.status ?? 'n/a'} msg=${err.message}`);
       }
-      res.status(502).end();
+      return { status: 502, body: new Uint8Array(), headers: {} };
     }
   }
 
-  function mount(app) {
-    if (!enabled) return;
-    app.get('/audio/:id', handleAudioRequest);
-    log.info(`[tts] audio path enabled (model=${tts.modelId} cap=${tts.dailyCharCap})`);
-  }
-
   return {
-    mount,
     register,
+    serveAudio,
     isEnabled: () => enabled,
   };
 }

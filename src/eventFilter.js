@@ -1,13 +1,9 @@
-import { config } from './config.js';
+import { defaultConfig } from './config.js';
 
 const IPV4_RE = /^\d+\.\d+\.\d+\.\d+$/;
 const IPV6_RE = /:.*:/;
 const HAS_LETTER_RE = /[A-Za-z]/;
 const CTRL_CHARS_RE = /[\x00-\x1F\x7F]/g;
-
-function isDebug() {
-  return process.env.DEBUG === '1';
-}
 
 function looksAnonymous(user) {
   if (!user || typeof user !== 'string') return true;
@@ -26,7 +22,13 @@ function stripCtrl(str) {
   return str.replace(CTRL_CHARS_RE, '');
 }
 
-export function createFilter({ onAccept, getLastNarratedAt = () => 0, logger = console } = {}) {
+export function createFilter({
+  onAccept,
+  getLastNarratedAt = () => 0,
+  logger = console,
+  debug = false,
+  config = defaultConfig,
+} = {}) {
   if (typeof onAccept !== 'function') {
     throw new Error('createFilter: onAccept is required');
   }
@@ -43,11 +45,12 @@ export function createFilter({ onAccept, getLastNarratedAt = () => 0, logger = c
         dedupHits = 0;
       }
     }, 60_000);
-    dedupReportTimer.unref?.();
+    // No .unref(): Workers setInterval returns a number with no .unref method.
+    // The DO tears the timer down via stop() on shutdown.
   }
 
   function reject(bucket, ev) {
-    if (isDebug()) {
+    if (debug) {
       const title = ev?.title || '?';
       logger.warn?.(`[eventFilter] reject ${bucket} :: ${title}`);
     }
@@ -83,7 +86,7 @@ export function createFilter({ onAccept, getLastNarratedAt = () => 0, logger = c
       return reject('titlePrefix', rawEvent);
     }
 
-    // 2. Title cooldown (Q13). Mark on cooldown-pass per spec.
+    // 2. Title cooldown — mark on cooldown-pass.
     const now = Date.now();
     const normalizedTitle = rawTitle.replaceAll('_', ' ');
     const cooldownUntil = (lastSeen.get(normalizedTitle) ?? 0) + config.filter.titleCooldownMs;
@@ -93,7 +96,7 @@ export function createFilter({ onAccept, getLastNarratedAt = () => 0, logger = c
     }
     touchLru(normalizedTitle, now);
 
-    // 3. Rate limit gate (Q2). Read-only — narrator owns lastNarratedAt.
+    // 3. Rate-limit gate (narrator owns lastNarratedAt).
     const lastNarratedAt = Number(getLastNarratedAt()) || 0;
     if (now - lastNarratedAt < config.filter.tickMs) {
       return reject('rateLimit', { ...rawEvent, title: normalizedTitle });
@@ -111,21 +114,12 @@ export function createFilter({ onAccept, getLastNarratedAt = () => 0, logger = c
     // 6. Delta
     const delta = rawEvent.type === 'edit' ? newLen - oldLen : newLen;
 
-    // 7. Build filtered event (Q16)
+    // 7. Build filtered event
     const ts = rawEvent.meta?.dt ? new Date(rawEvent.meta.dt).getTime() : now;
     const id = `${rawEvent.wiki}:${rawEvent.meta?.id ?? `${ts}-${title}`}`;
-    const filtered = {
-      user,
-      title,
-      comment,
-      delta,
-      wiki: rawEvent.wiki,
-      type: rawEvent.type,
-      ts,
-      id,
-    };
+    const filtered = { user, title, comment, delta, wiki: rawEvent.wiki, type: rawEvent.type, ts, id };
 
-    if (isDebug()) {
+    if (debug) {
       logger.info?.(`[eventFilter] accept :: ${title} (Δ${delta}, ${rawEvent.type})`);
     }
 

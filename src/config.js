@@ -1,4 +1,4 @@
-export const config = Object.freeze({
+export const defaultConfig = Object.freeze({
   filter: {
     minBytes: 50,
     tickMs: 4000,
@@ -10,7 +10,7 @@ export const config = Object.freeze({
     inputMax: { user: 50, title: 100, comment: 200 },
   },
   narrator: {
-    model: process.env.MODEL || 'claude-haiku-4-5-20251001',
+    model: 'claude-haiku-4-5-20251001',
     maxTokens: 80,
     temperature: 0.9,
     timeoutMs: 5000,
@@ -23,9 +23,9 @@ export const config = Object.freeze({
     rejectMaxWords: 30,
   },
   server: {
-    port: Number(process.env.PORT) || 3000,
     replayBufferSize: 5,
     heartbeatMs: 20_000,
+    clientMaxMs: 4 * 60_000,
   },
   frontendMirror: {
     stackSize: 5,
@@ -36,7 +36,7 @@ export const config = Object.freeze({
   tts: {
     elevenlabs: {
       apiBase: 'https://api.elevenlabs.io',
-      modelId: process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5',
+      modelId: 'eleven_turbo_v2_5',
       voiceSettings: {
         stability: 0.45,
         similarity_boost: 0.75,
@@ -45,8 +45,34 @@ export const config = Object.freeze({
       },
       cacheSize: 20,
       maxChars: 300,
-      dailyCharCap: Number(process.env.ELEVENLABS_DAILY_CHAR_CAP) || 30000,
+      dailyCharCap: 30000,
       requestTimeoutMs: 8000,
     },
   },
 });
+
+function numberOr(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function buildConfig(env = {}) {
+  const d = defaultConfig;
+  return Object.freeze({
+    ...d,
+    narrator: Object.freeze({
+      ...d.narrator,
+      model: env.MODEL || d.narrator.model,
+    }),
+    tts: Object.freeze({
+      elevenlabs: Object.freeze({
+        ...d.tts.elevenlabs,
+        modelId: env.ELEVENLABS_MODEL_ID || d.tts.elevenlabs.modelId,
+        dailyCharCap: numberOr(env.ELEVENLABS_DAILY_CHAR_CAP, d.tts.elevenlabs.dailyCharCap),
+      }),
+    }),
+  });
+}
+
+export const config = defaultConfig;

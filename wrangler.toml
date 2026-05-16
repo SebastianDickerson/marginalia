@@ -1,0 +1,27 @@
+name = "marginalia"
+main = "src/worker.js"
+compatibility_date = "2026-05-16"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "HubDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HubDO"]
+
+[observability]
+enabled = true
+
+# Optional vars — override per-env or via `wrangler secret put` for the *_KEY ones.
+# [vars]
+# MODEL = "claude-haiku-4-5-20251001"
+# ELEVENLABS_MODEL_ID = "eleven_turbo_v2_5"
+# ELEVENLABS_DAILY_CHAR_CAP = "30000"
+# DEBUG = "0"
