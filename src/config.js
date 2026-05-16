@@ -43,7 +43,7 @@ export const defaultConfig = Object.freeze({
         style: 0.30,
         use_speaker_boost: true,
       },
-      cacheSize: 20,
+      cacheSize: 100,
       maxChars: 300,
       dailyCharCap: 30000,
       requestTimeoutMs: 8000,
